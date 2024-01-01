@@ -1,6 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 import re
+import urllib3
 from urllib.parse import urljoin
 from urllib.error import URLError
 from urllib.robotparser import RobotFileParser
@@ -59,6 +60,31 @@ def update_temple_phone(temple_name, phone_official_site):
         print(f"Skipping update for Phone {temple_name}.")
 
 
+# Insertion Descriptions to temple_descriptions table
+def add_temple_description(temple_name, description, websites):
+    fetch_temple_id_sql = "SELECT temple_id FROM temples WHERE temple_name = %s"
+    cursor.execute(fetch_temple_id_sql, (temple_name,))
+    temple_id = cursor.fetchone()
+
+    if temple_id:
+        temple_id = temple_id[0]  # Extracting the temple_id value
+
+        # Inserting or updating temple description with fetched temple_id, description, and websites
+        insert_or_update_desc_sql = """
+        INSERT INTO temple_descriptions (temple_id, description, websites) 
+        VALUES (%s, %s, %s)
+        ON DUPLICATE KEY UPDATE 
+        description = VALUES(description), 
+        websites = VALUES(websites)
+        """
+        desc_values = (temple_id, description, websites)
+        cursor.execute(insert_or_update_desc_sql, desc_values)
+        connection.commit()
+        print("Success: Inserted or Updated Description and Website URL")
+    else:
+        print("Temple not found in the temples table")
+
+
 def insert_temple_data(temple_name, deity_name, description, image_url, location, latitude, longitude, opening_hours,
                        related_festival, ways_to_book, websites, phone_official_site, email_official_site):
     # Check if the record already exists
@@ -81,11 +107,16 @@ def insert_temple_data(temple_name, deity_name, description, image_url, location
         cursor.execute(sql, values)
         connection.commit()
         print("Success Inserted Data")
+
     # Edit by Aman
     # Assuming you've checked for existence as in your previous code
     elif count > 0:
         # For Updating Phone Number
         update_temple_phone(temple_name, phone_official_site)
+        
+        # For Add Description to Temple_Descriptions table
+        add_temple_description(temple_name, description, websites)
+
     else:
         print(f"Record for {temple_name} already exists. Skipping insertion.")
 
@@ -187,7 +218,7 @@ def is_crawling_allowed(url):
         rp.read()
         return rp.can_fetch("*", url)
     except URLError as e:
-        print(f"Error while fetching robots.txt(robots.txt file doesnot exist for this website)")
+        print(f"Error while fetching robots.txt(robots.txt file does not exist for this website)")
         return True
 
 
@@ -220,7 +251,9 @@ def crawl(url, limit, li, deity_name, address, festival, temple_name):
         return
 
     # Send a GET request to the specified URL
-    response = requests.get(url)
+    #For SSL certi
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    response = requests.get(url, verify=False)
 
     # Parse the HTML content using BeautifulSoup
     soup = BeautifulSoup(response.content, 'html.parser')
@@ -231,6 +264,7 @@ def crawl(url, limit, li, deity_name, address, festival, temple_name):
 
     # Extract and print all the text content within the <p> tags
     paragraphs = soup.find_all('p')
+    list_p.clear()  # Clear the list don't clear if you want to add older description
     for p in paragraphs:
         cleaned_text = p.text.strip()
         if not cleaned_text or cleaned_text.isspace():
@@ -240,9 +274,8 @@ def crawl(url, limit, li, deity_name, address, festival, temple_name):
         if match:
             continue
         else:
-            if cleaned_text not in list_p:
-                list_p.append(cleaned_text)
-                print(cleaned_text)
+            list_p.append(cleaned_text)
+            print(cleaned_text)
 
     # Extract and print the URLs of all the images within the <img> tags
     images = soup.find_all('img')
@@ -290,13 +323,16 @@ def crawl(url, limit, li, deity_name, address, festival, temple_name):
     # Edit by Aman
     phone_official_site = phone_official_site.strip()
     if phone_official_site in ["Empty Phone", "Phone number not available ,International phone number not available", ""]:
-        phone_number = re.search(r'\+\d{2}-\d{2}-\d{4}-\d{4}', soup.text)
+
+        # storing only number which is on the top
+        phone_number = re.search(r'\+\d{2}-\d{2}-\d{4}-\d{4}|\b\d{11}\b|\b9\d{9}\b', soup.text)
         if phone_number:
             phone_official_site = phone_number.group()
             phone_official_site = format_phone_number(phone_official_site)
     else:
         phone_official_site = format_phone_number(phone_official_site)
 
+    print(f"After Soup: {phone_official_site}")
     email_official_site = locationResults['email'] if locationResults and locationResults['email'] else "Empty Email"
     related_festival = festival
     ways_to_book = 'To Be Implemented'
@@ -334,14 +370,10 @@ def get_google_search_links(query):
 
 
 # Start the crawler by providing a seed URL
-# q = input("Enter Topic name: ")
-# deity = input("Enter Deity name: ")
-# address = input("Enter Address: ")
-# festival = input("Enter Festival: ")
-q = "Kedarnath Temple"
-deity = "Vishnu"
-address = "Rudraprayag"
-festival = "Badri-Kedar festival"
+q = input("Enter Topic name: ")
+deity = input("Enter Deity name: ")
+address = input("Enter Address: ")
+festival = input("Enter Festival: ")
 links = get_google_search_links(q)
 for link in links[:3]:
     if link.startswith("ppp"):
