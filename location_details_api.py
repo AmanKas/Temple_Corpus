@@ -52,7 +52,7 @@ def get_location_details(address):
                     for period in periods:
                         day = period['open']['day']
                         open_time = period['open']['time']
-                        close_time = period['close']['time']
+                        close_time = period['close']['time'] if 'close' in period else '00:00'
 
                         day_name = [
                             'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'
