@@ -363,6 +363,7 @@ def crawl(url, limit, li, deity_name, address, temple_name):
     description = "\n".join(list_p)
 
     # Scraped Images Url
+    image_url = ""
     if len(list_img) > 1:
         image_url = list_img[1]
     # converting into string
@@ -452,9 +453,9 @@ def get_google_search_links(query):
 
 
 # Start the crawler by providing a seed URL
-# q = input("Enter Topic name: ")
-# deity = input("Enter Deity name: ")
-# address = input("Enter Address: ")
+q = input("Enter Topic name: ")
+deity = input("Enter Deity name: ")
+address = input("Enter Address: ")
 links = get_google_search_links(q)
 crawlable_links_count = 0
 index = 0
