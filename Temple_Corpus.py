@@ -1,12 +1,18 @@
+import shutil
 import requests
 from bs4 import BeautifulSoup
 import re
+import os
 import urllib3
+from PIL import Image
+import io
+import time
 
 from location_details_api import get_location_details
 from urllib.error import URLError
 from urllib.robotparser import RobotFileParser
 from urllib.parse import unquote
+from urllib.parse import urlparse
 from datetime import datetime
 
 import mysql.connector
@@ -28,9 +34,8 @@ cursor = connection.cursor()
 my_list_web = []
 my_list = []
 list_p = []
-alt_img = []
-list_img = []
-json_data1 = []
+# List of URLs to skip
+skip_site = "www.tripadvisor.in"
 
 
 # ________________________________________________________________________________________________________________________________
@@ -88,6 +93,12 @@ def add_temple_description(temple_name, description, websites):
         result = cursor.fetchone()
         existing_websites.append(result)
 
+        fetch_desc_sql = "SELECT description FROM temples WHERE temple_name = %s"
+        cursor.execute(fetch_desc_sql, (temple_name,))
+        cursor.execute(fetch_desc_sql, (temple_name,))
+        existing_desc = cursor.fetchone()
+        existing_desc = existing_desc[0]
+
         # Flatten list of tuples into list of strings
         existing_websites = [website[0] for website in existing_websites]
 
@@ -104,6 +115,15 @@ def add_temple_description(temple_name, description, websites):
             desc_values = (temple_id, description, websites)
             cursor.execute(insert_or_update_desc_sql, desc_values)
             connection.commit()
+            if existing_desc == " " or existing_desc == "":
+                insert_or_update_desc_sql = """
+                    UPDATE temples
+                    SET description = %s
+                    WHERE temple_name = %s
+                    """
+                desc_values = (description, temple_name)
+                cursor.execute(insert_or_update_desc_sql, desc_values)
+                connection.commit()
             print("Success: Inserted or Updated Description and Website URL")
         # else:
         #     print("Website URL is already in the database. No update needed.")
@@ -152,7 +172,29 @@ def update_temple_email(temple_name, new_email):
     #     print("Email is already in the database. No update needed.")
 
 
-def insert_temple_data(temple_name, deity_name, description, image_url, location, latitude, longitude, opening_hours, ways_to_book, websites, phone_official_site, email_official_site):
+def update_image_path(temple_name, new_image_path):
+    # Fetch existing email
+    fetch_existing_image_sql = "SELECT image_path FROM temples WHERE temple_name = %s"
+    cursor.execute(fetch_existing_image_sql, (temple_name,))
+    existing_image_path = cursor.fetchone()
+    existing_image_path = existing_image_path[0]
+    # Check if new email is empty
+    if existing_image_path == " " or existing_image_path == "":
+        # Update image_path
+        update_img_sql = """
+        UPDATE temples
+        SET image_path = %s
+        WHERE temple_name = %s
+        """
+        cursor.execute(update_img_sql, (new_image_path, temple_name))
+        connection.commit()
+        print("Success: Updated Images Path")
+    # else:
+    #     print("Email is already in the database. No update needed.")
+
+
+def insert_temple_data(temple_name, deity_name, description, image_path, location, latitude, longitude, opening_hours,
+                       ways_to_book, websites, phone_official_site, email_official_site):
     # Check if the record already exists
     check_sql = "SELECT COUNT(*) FROM temples WHERE temple_name = %s"
     cursor.execute(check_sql, (temple_name,))
@@ -162,11 +204,11 @@ def insert_temple_data(temple_name, deity_name, description, image_url, location
         # Record does not exist, perform the insertion
         sql = """
         INSERT INTO temples (
-            temple_name, deity_name, description, image_url, location, latitude, longitude, OpeningHours, ways_to_book, websites, phone_official_site, email_official_site
+            temple_name, deity_name, description, image_path, location, latitude, longitude, OpeningHours, ways_to_book, websites, phone_official_site, email_official_site
         ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
         values = (
-            temple_name, deity_name, description, image_url, location, latitude, longitude, opening_hours,
+            temple_name, deity_name, description, image_path, location, latitude, longitude, opening_hours,
             ways_to_book, websites, phone_official_site, email_official_site
         )
         cursor.execute(sql, values)
@@ -188,27 +230,39 @@ def insert_temple_data(temple_name, deity_name, description, image_url, location
         # For Updating Email
         update_temple_email(temple_name, email_official_site)
 
+        # For Updating Images_Path
+        update_image_path(temple_name, image_path)
+
     else:
         print(f"Multiple Record for {temple_name} already exists. Skipping insertion.")
 
 
-def insert_temple_images(temple_name, img_url, img_alt):
-
+def insert_temple_images(temple_name, img_path):
     # Query to get the temple_id from the temples table
     cursor.execute("SELECT temple_id FROM temples WHERE temple_name = %s", (temple_name,))
     result = cursor.fetchone()
+
     # Extract the temple_id from the tuple
     temple_id = result[0] if result else None
     if temple_id is not None:
-        # Query to insert the data into the temple_images table
+        # Query to check if the img_path already exists for the temple_id
         cursor.execute(
-            "INSERT INTO temple_images (temple_id, img_url, img_alt, added_on) VALUES (%s, %s, %s, %s)",
-            (temple_id, img_url, img_alt, datetime.now())
+            "SELECT 1 FROM temple_images WHERE temple_id = %s AND img_path = %s",
+            (temple_id, img_path)
         )
-        print("Success: Inserted images links")
+        exists = cursor.fetchone()
+        if exists:
+            print("Error: img_path already exists for this temple_id")
+        else:
+            # Query to insert the data into the temple_images table
+            cursor.execute(
+                "INSERT INTO temple_images (temple_id, img_path, added_on) VALUES (%s, %s, %s)",
+                (temple_id, img_path, datetime.now())
+            )
+            connection.commit()
     else:
         print("Error: Temple_id not found")
-    connection.commit()
+
 
 def insert_temple_data_by_api(temple_name, location, latitude, longitude, opening_hours, phone_official_site,
                               email_official_site):
@@ -275,6 +329,85 @@ def format_phone_number(phone_numbers):
     return ', '.join(formatted_numbers)  # Join the numbers into a single string
 
 
+def get_absolute_url(src, base_url):
+    pattern = r'\b\w+\b/'
+    while "../" in src:
+        src = src.replace("../", "")
+    src = src.lstrip('/')
+    # Getting rid of netloc
+    parts = src.split('/', 1)
+    # print("parts by /: ",parts[0])
+    if src.startswith('https://'):
+        return src
+    elif re.match(r'^\b\w+\b\.', parts[0]):
+        src = f"https://{src}"
+    else:
+        src = f"{base_url}/{src}"
+    # putting base
+    # print("base_url:--------- ", src)
+    return src
+
+
+def is_valid_url(url):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+    try:
+        response = requests.head(url, headers=headers, allow_redirects=True)
+        if response.status_code == 200:
+            return True
+        else:
+            return False
+    except requests.RequestException:
+        return False
+
+
+def process_images(images, base_url, temple_name):
+    list_img = []
+    i = 0
+    for i, image in enumerate(images):
+        src = image.get('src')
+        srcset = image.get('srcset')
+        if srcset:
+            src = srcset.split(',')[-1].split()[0]
+        ext = ""
+        if src is None:
+            continue
+        if '.' in src:
+            ext = src[src.rindex('.'):]
+        file_name = src.split('/')[-1].split('.')[0]
+        if src.endswith(('.png', '.jpg', '.jpeg')):
+            src = get_absolute_url(src, base_url)
+
+            if not is_valid_url(src):
+                print(f"Invalid URL: {src}")
+                continue
+            # Download the image
+            r = requests.get(src, stream=True)
+
+            # Check if the image is less than 2MB
+            content_size = int(r.headers.get('content-length', 0))
+            img_path = f'images/{temple_name}/{file_name}_{content_size}{ext}'
+
+            # print(f"content: {content_size / 1000}KB, url {src}")
+            if 35 * 1024 <= content_size <= 5 * 1024 * 1024:  # 100KB-5MB in bytes
+                # Save the image in the images directory
+                print("Image URL: ", src)
+                with open(img_path, 'wb') as out_file:
+                    r.raw.decode_content = True
+                    shutil.copyfileobj(r.raw, out_file)
+                    list_img.append((img_path, content_size))
+            elif content_size >= 5 * 1024 * 1024:
+                print("Image URL: ", src)
+                img = Image.open(io.BytesIO(r.content))
+                img.save(img_path, optimize=True, quality=70)
+                list_img.append((img_path, content_size))
+            else:
+                print("Filtering Images")
+
+    print("images add")
+    return list_img
+
+
 def is_crawling_allowed(url):
     try:
         rp = RobotFileParser()
@@ -291,14 +424,23 @@ def crawl(url, limit, li, deity_name, address, temple_name):
     flag = 0
     if limit <= 0:
         return
+    # parse url for the base url
+    parsed = urlparse(url)
+    scheme = parsed.scheme
+    base_url = parsed.netloc
+    base_url = f"{scheme}://{base_url}"
 
     # Send a GET request to the specified URL
     urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
     # response = requests.get(url, headers=headers, verify=False)
-    response = requests.get(url, verify=False)
 
+    try:
+        response = requests.get(url, headers=headers, verify=False, timeout=5)  # wait for 5 seconds
+    except requests.exceptions.Timeout:
+        print("Timeout occurred")
+        return None
     # Parse the HTML content using BeautifulSoup
     soup = BeautifulSoup(response.content, 'html.parser')
     # Extract relevant information or perform desired actions
@@ -308,10 +450,13 @@ def crawl(url, limit, li, deity_name, address, temple_name):
     # Extract and print all the text content within the <p> tags
     paragraphs = soup.find_all('p')
     list_p.clear()  # Clear the list don't clear if you want to add older description
+    error_message = "An appropriate representation of the requested resource could not be found on this server. This error was generated by Mod_Security."
     for p in paragraphs:
         cleaned_text = p.text.strip()
         if not cleaned_text or cleaned_text.isspace():
             continue
+        if error_message in cleaned_text or cleaned_text == "":
+            return 0
         pattern = r'[\t]{2,}|@'
         match = re.search(pattern, cleaned_text)
         if match:
@@ -321,22 +466,20 @@ def crawl(url, limit, li, deity_name, address, temple_name):
             print(cleaned_text)
 
     # Extract and print the URLs of all the images within the <img> tags
-    list_img.clear()
-    alt_img.clear()
+    if not os.path.exists('images'):
+        os.makedirs('images')
+    temple_dir = os.path.join('images', temple_name)
+    if not os.path.exists(temple_dir):
+        os.makedirs(temple_dir)
+
+    # getting all image src
     images = soup.find_all('img')
-    for image in images:
-        src = image.get('src')
-        alt = image.get('alt')
-        if src not in list_img:
-            list_img.append(src)
-            alt_img.append(alt)
-            print("Image URL: ", src)
 
     # Find all the links on the page
-    links = soup.find_all('a')
+    ref_links = soup.find_all('a')
 
     # Process each link
-    for link in links:
+    for link in ref_links:
         href = link.get('href')
 
         # Check if the link is not None
@@ -362,14 +505,15 @@ def crawl(url, limit, li, deity_name, address, temple_name):
     # Scraped Description
     description = "\n".join(list_p)
 
-    # Scraped Images Url
-    image_url = ""
+    # Scraped Images Url from a tuple of path and size
+    image_sizes = process_images(images, base_url, temple_name)
+    image_sizes.sort(key=lambda x: x[1], reverse=True)  # Sort image sizes based on the second element
+    list_img = [path for path, size in image_sizes]  # Separate the Path
+    image_path = ""
     if len(list_img) > 1:
-        image_url = list_img[1]
+        image_path = list_img[1]
     # converting into string
     list_img_str = ', '.join(list_img)
-    alt_img_str = ', '.join(filter(None, alt_img))
-
 
     # Scraping Phone Number
     # Designed to only store the first number
@@ -401,9 +545,12 @@ def crawl(url, limit, li, deity_name, address, temple_name):
     websites = li
 
     # Insert Data in Database
-    insert_temple_data(temple_name, deity_name, description, image_url, location, latitude, longitude, opening_hours, ways_to_book, websites, phone_official_site, email_official_site)
-    # Insert Images Links in Database
-    insert_temple_images(temple_name, list_img_str, alt_img_str)
+    insert_temple_data(temple_name, deity_name, description, image_path, location, latitude, longitude, opening_hours,
+                       ways_to_book, websites, phone_official_site, email_official_site)
+    # Inserting in Database from list_img
+    for img_path in list_img:
+        insert_temple_images(temple_name, img_path)
+    return 1
 
 
 def get_temple_details_by_api(temple_name):
@@ -422,7 +569,8 @@ def get_temple_details_by_api(temple_name):
     phone_official_site = format_phone_number(phone_official_site)
     email_official_site = locationResults['email'] if locationResults and locationResults['email'] else "Empty Email"
     # insert into table
-    insert_temple_data_by_api(temple_name, location, latitude, longitude, opening_hours, phone_official_site,email_official_site)
+    insert_temple_data_by_api(temple_name, location, latitude, longitude, opening_hours, phone_official_site,
+                              email_official_site, )
 
 
 # getting google search results link
@@ -453,15 +601,20 @@ def get_google_search_links(query):
 
 
 # Start the crawler by providing a seed URL
-q = input("Enter Topic name: ")
-deity = input("Enter Deity name: ")
-address = input("Enter Address: ")
+# q = input("Enter Topic name: ")
+# deity = input("Enter Deity name: ")
+# address = input("Enter Address: ")
+q = "SRI VARADARAJA PERUMAL TEMPLE"
+deity = "Shiva"
+address = "KANCHIPURAM"
 links = get_google_search_links(q)
 crawlable_links_count = 0
 index = 0
+# link = "https://shirdi.tourismindia.co.in/sai-baba-samadhi-mandir-shirdi"
+# crawl(link, 1, link, deity, address, q)
 while crawlable_links_count < 3 and index < len(links):
     link = links[index]
-    if link.startswith("ppp"):
+    if skip_site in link or link.startswith("ppp"):
         index += 1
         continue
     else:
@@ -470,8 +623,8 @@ while crawlable_links_count < 3 and index < len(links):
             my_list_web.append(result_web)
             print("\nWebsite Url: ", link, "\n")
             if is_crawling_allowed(link):
-                crawl(link, 1, link, deity, address, q)
-                crawlable_links_count += 1
+                increment = crawl(link, 1, link, deity, address, q)
+                crawlable_links_count += increment
             else:
                 print(f"Warning: Crawling not allowed for {link} skipping this link")
     index += 1
