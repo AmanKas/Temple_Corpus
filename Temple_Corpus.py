@@ -601,12 +601,9 @@ def get_google_search_links(query):
 
 
 # Start the crawler by providing a seed URL
-# q = input("Enter Topic name: ")
-# deity = input("Enter Deity name: ")
-# address = input("Enter Address: ")
-q = "SRI VARADARAJA PERUMAL TEMPLE"
-deity = "Shiva"
-address = "KANCHIPURAM"
+q = input("Enter Topic name: ")
+deity = input("Enter Deity name: ")
+address = input("Enter Address: ")
 links = get_google_search_links(q)
 crawlable_links_count = 0
 index = 0
