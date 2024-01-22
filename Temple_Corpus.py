@@ -601,14 +601,15 @@ def get_google_search_links(query):
 
 
 # Start the crawler by providing a seed URL
-q = input("Enter Topic name: ")
+q = input("Enter Temple name: ")
 deity = input("Enter Deity name: ")
 address = input("Enter Address: ")
+q = q.strip()
+deity = deity.strip()
+address = address.strip()
 links = get_google_search_links(q)
 crawlable_links_count = 0
 index = 0
-# link = "https://shirdi.tourismindia.co.in/sai-baba-samadhi-mandir-shirdi"
-# crawl(link, 1, link, deity, address, q)
 while crawlable_links_count < 3 and index < len(links):
     link = links[index]
     if skip_site in link or link.startswith("ppp"):
